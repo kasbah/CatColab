@@ -204,6 +204,11 @@
             pkgs = pkgsLinux;
           };
 
+          migrator = pkgsLinux.callPackage ./packages/migrator/default.nix {
+            inherit craneLib cargoArtifacts;
+            pkgs = pkgsLinux;
+          };
+
           notebook-types-node = pkgsLinux.callPackage ./packages/notebook-types/default.nix {
             inherit craneLib cargoArtifacts;
             pkgs = pkgsLinux;
@@ -231,21 +236,28 @@
           #
           # use:
           # nix build .#catcolab-vm
-          # cp result/nixos.qcow2 nixos.qcow2
+          # cp result/catcolab-vm.qcow2 catcolab-vm.qcow2
           # db-utils vm start
           # deploy -s .#catcolab-vm
-          catcolab-vm = nixos-generators.nixosGenerate {
-            system = "x86_64-linux";
-            format = "qcow";
+          catcolab-vm = pkgsLinux.stdenv.mkDerivation {
+            name = "catcolab-vm";
+            src = nixos-generators.nixosGenerate {
+              system = "x86_64-linux";
+              format = "qcow";
 
-            modules = [
-              ./infrastructure/hosts/catcolab-vm
-            ];
+              modules = [
+                ./infrastructure/hosts/catcolab-vm
+              ];
 
-            specialArgs = {
-              inherit inputs self;
-              rustToolchain = rustToolchainLinux;
+              specialArgs = {
+                inherit inputs self;
+                rustToolchain = rustToolchainLinux;
+              };
             };
+            installPhase = ''
+              mkdir -p $out
+              cp $src/nixos.qcow2 $out/catcolab-vm.qcow2
+            '';
           };
         };
       };
@@ -320,57 +332,16 @@
         };
       };
 
-      # The backend relies on Firebase, so tests require VM internet access. Enable networking by running
-      # with --no-sandbox.
-      # Docs for nixos tests: https://nixos.org/manual/nixos/stable/index.html#sec-nixos-test-nodes
-      # (google and LLMs are useless)
-      checks.x86_64-linux.integrationTests = nixpkgs.legacyPackages.x86_64-linux.testers.runNixOSTest {
-        name = "Integration Tests";
-
-        skipTypeCheck = true;
-        nodes = {
-          catcolab = import ./infrastructure/hosts/catcolab-vm;
-        };
-
-        node.specialArgs = {
-          inherit inputs self;
-          rustToolchain = rustToolchainLinux;
-        };
-
-        # NOTE: This only checks if the services "start" from systemds perspective, not if they are not
-        # failed immediately after starting...
-        testScript = ''
-          def dump_logs(machine, *units):
-              for u in units:
-                  print(f"\n===== journal for {u} =====")
-                  print(machine.succeed(f"journalctl -u {u} --no-pager"))
-
-          def test_service(machine, service):
-              try:
-                  machine.wait_for_unit(service)
-              except:
-                  dump_logs(machine, service)
-                  raise
-
-          def test_oneshot_service(machine, service):
-              try:
-                  machine.wait_until_succeeds(
-                      f"test $(systemctl is-active {service}) = inactive"
-                  )
-              except:
-                  dump_logs(machine, service)
-                  raise
-
-          test_oneshot_service(catcolab, "database-setup.service")
-          test_oneshot_service(catcolab, "migrations.service")
-
-          test_service(catcolab, "automerge.service");
-          test_service(catcolab, "backend.service");
-          test_service(catcolab, "caddy.service");
-
-          catcolab.start_job("backupdb.service")
-          test_oneshot_service(catcolab, "backupdb.service")
-        '';
-      };
+      # Temporarily disabled until more meaningful tests are developed. Keeping the frontend dependecies
+      # up to date is currently not worth the hassle.
+      # checks.x86_64-linux.integrationTests = import ./infrastructure/tests/integration.nix {
+      #   inherit
+      #     nixpkgs
+      #     inputs
+      #     self
+      #     linuxSystem
+      #     ;
+      #   rustToolchain = rustToolchainLinux;
+      # };
     };
 }

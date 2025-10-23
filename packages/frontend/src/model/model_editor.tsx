@@ -1,7 +1,7 @@
 import { useParams } from "@solidjs/router";
 import { getAuth } from "firebase/auth";
 import { useAuth, useFirebaseApp } from "solid-firebase";
-import { Match, Show, Switch, createResource, createSignal, useContext } from "solid-js";
+import { Match, Show, Switch, createSignal, useContext } from "solid-js";
 import invariant from "tiny-invariant";
 
 import type { ModelJudgment } from "catlog-wasm";
@@ -12,19 +12,20 @@ import {
     type FormalCellEditorProps,
     NotebookEditor,
     NotebookUtils,
-    cellShortcutModifier,
     newFormalCell,
 } from "../notebook";
-import { DocumentBreadcrumbs, DocumentLoadingScreen, DocumentMenu, Toolbar } from "../page";
+import { DocumentBreadcrumbs, DocumentLoadingScreen, Toolbar } from "../page";
 import { WelcomeOverlay } from "../page/welcome_overlay";
-import { TheoryLibraryContext, stdTheories } from "../stdlib";
-import type { ModelTypeMeta } from "../theory";
+import { stdTheories } from "../stdlib";
+import { type ModelTypeMeta, TheoryLibraryContext } from "../theory";
+import { TheorySelectorDialog } from "../theory/theory_selector";
 import { PermissionsButton } from "../user";
 import { LiveModelContext } from "./context";
-import { type LiveModelDocument, getLiveModel, migrateModelDocument } from "./document";
+import { type LiveModelDocument, migrateModelDocument } from "./document";
+import { createModelLibraryWithApi } from "./model_library";
+import { ModelMenu } from "./model_menu";
 import { MorphismCellEditor } from "./morphism_cell_editor";
 import { ObjectCellEditor } from "./object_cell_editor";
-import { TheorySelectorDialog } from "./theory_selector";
 import {
     type MorphismDecl,
     type ObjectDecl,
@@ -36,16 +37,14 @@ import {
 import "./model_editor.css";
 
 export default function ModelPage() {
+    const params = useParams();
+
     const api = useApi();
     const theories = useContext(TheoryLibraryContext);
     invariant(theories, "Must provide theory library as context to model page");
+    const models = createModelLibraryWithApi(api, theories);
 
-    const params = useParams();
-
-    const [liveModel] = createResource(
-        () => params.ref,
-        (refId) => getLiveModel(refId, api, theories),
-    );
+    const liveModel = models.useLiveModel(() => params.ref);
 
     return (
         <Show when={liveModel()} fallback={<DocumentLoadingScreen />}>
@@ -60,14 +59,10 @@ export function ModelDocumentEditor(props: {
     return (
         <div class="growable-container">
             <Toolbar>
-                <DocumentMenu liveDocument={props.liveModel} />
-                <DocumentBreadcrumbs document={props.liveModel} />
+                <ModelMenu liveModel={props.liveModel} />
+                <DocumentBreadcrumbs liveDoc={props.liveModel.liveDoc} />
                 <span class="filler" />
-                <PermissionsButton
-                    permissions={props.liveModel.liveDoc.permissions}
-                    refId={props.liveModel.refId}
-                    liveDocument={props.liveModel}
-                />
+                <PermissionsButton liveDoc={props.liveModel.liveDoc} />
             </Toolbar>
             <ModelPane liveModel={props.liveModel} />
         </div>
@@ -106,7 +101,7 @@ export function ModelPane(props: {
                 </div>
                 <TheorySelectorDialog
                     theoryMeta={stdTheories.getMetadata(liveDoc().doc.theory)}
-                    setTheory={(id) => migrateModelDocument(liveDoc(), id, stdTheories)}
+                    setTheory={(id) => migrateModelDocument(props.liveModel, id, stdTheories)}
                     theories={selectableTheories()}
                 />
             </div>
@@ -198,7 +193,7 @@ function modelCellConstructor(meta: ModelTypeMeta): CellConstructor<ModelJudgmen
     return {
         name,
         description,
-        shortcut: shortcut && [cellShortcutModifier, ...shortcut],
+        shortcut,
         construct() {
             return meta.tag === "ObType"
                 ? newFormalCell(newObjectDecl(meta.obType))

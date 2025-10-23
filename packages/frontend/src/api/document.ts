@@ -1,35 +1,28 @@
-import {
-    type ChangeFn,
-    type DocHandle,
-    type DocHandleChangePayload,
-    type DocumentId,
+import type {
+    AnyDocumentId,
+    ChangeFn,
+    DocHandle,
+    DocHandleChangePayload,
     Repo,
 } from "@automerge/automerge-repo";
 import jsonpatch from "fast-json-patch";
 import { type Accessor, createEffect, createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import invariant from "tiny-invariant";
-import * as uuid from "uuid";
 
 import type { Permissions } from "catcolab-api";
-import type { Document } from "catlog-wasm";
-import * as catlogWasm from "catlog-wasm";
-import { PermissionsError } from "../util/errors";
-import type { Api } from "./types";
+import { type Document, migrateDocument } from "catlog-wasm";
 
-/** An Automerge repo with no networking, used for read-only documents. */
-const localRepo = new Repo();
-
-/** Live document retrieved from the backend.
+/** Live document, typically retrieved from the backend.
 
 A live document can be used in reactive contexts and is connected to an
 Automerge document handle.
  */
-export type LiveDoc<Doc extends Document> = {
+export type LiveDoc<Doc extends Document = Document> = {
     /** The document data, suitable for use in reactive contexts.
 
     This data should never be mutated directly. Instead, call `changeDoc` or, if
-    necessary, interact with the Automerge document handle.
+    necessary, use the Automerge document handle.
      */
     doc: Doc;
 
@@ -39,46 +32,55 @@ export type LiveDoc<Doc extends Document> = {
     /** The Automerge document handle for the document. */
     docHandle: DocHandle<Doc>;
 
-    /** Permissions for the document retrieved from the backend. */
+    /** Associated document ref in the backend, if any.
+
+    In typical usage of the official CatColab frontend and backend, this field
+    will be set, but lower-level components in the frontend are decoupled from
+    the backend, relying on Automerge only.
+     */
+    docRef?: DocRef;
+};
+
+/** Info about a document ref in the CatColab backend. */
+export type DocRef = {
+    /** ID of the document ref. */
+    refId: string;
+
+    /** Permissions for the document ref. */
     permissions: Permissions;
 };
 
-/** Retrieve a live document from the backend.
+/** Gets a document from an Automerge repo, migrating it if necessary.
 
-When the user has write permissions, changes to the document will be propagated
-by Automerge to the backend and to other clients. When the user has only read
-permissions, the Automerge doc handle will be "fake", existing only locally in
-the client. And if the user doesn't even have read permissions, this function
-will yield an unauthorized error!
+Prefer calling this function over calling `Repo.find` directly to ensure that
+any necessary migrations are performed before the data is accessed.
  */
-export async function getLiveDoc<Doc extends Document>(
-    api: Api,
-    refId: string,
-    docType?: string,
-): Promise<LiveDoc<Doc>> {
-    invariant(uuid.validate(refId), () => `Invalid document ref ${refId}`);
-    const { rpc, repo } = api;
+export async function findAndMigrate<Doc extends Document>(
+    repo: Repo,
+    docId: AnyDocumentId,
+    docType?: Doc["type"],
+): Promise<DocHandle<Doc>> {
+    const docHandle = await repo.find<Doc>(docId);
 
-    const result = await rpc.get_doc.query(refId);
-    if (result.tag !== "Ok") {
-        if (result.code === 403) {
-            throw new PermissionsError(result.message);
-        } else {
-            throw new Error(`Failed to retrieve document: ${result.message}`);
-        }
-    }
-    const refDoc = result.content;
-
-    let docHandle: DocHandle<Doc>;
-    if (refDoc.tag === "Live") {
-        const docId = refDoc.docId as DocumentId;
-        docHandle = (await repo.find(docId)) as DocHandle<Doc>;
-    } else {
-        const init = refDoc.content as unknown as Doc;
-        docHandle = localRepo.create(init);
+    // Perform any migrations on the document.
+    // XXX: copied from automerge-doc-server/src/server.ts:
+    const docBefore = docHandle.doc();
+    const docAfter = migrateDocument(docBefore);
+    if ((docBefore as Doc).version !== docAfter.version) {
+        const patches = jsonpatch.compare(docBefore as Doc, docAfter);
+        docHandle.change((doc: unknown) => {
+            jsonpatch.applyPatch(doc, patches);
+        });
     }
 
-    return getLiveDocFromDocHandle(docHandle, docType, refDoc.permissions);
+    if (docType !== undefined) {
+        const actualType = docHandle.doc().type;
+        invariant(
+            actualType === docType,
+            () => `Expected document of type ${docType}, got ${actualType}`,
+        );
+    }
+    return docHandle;
 }
 
 /** Create a live document from an Automerge document handle.
@@ -88,38 +90,13 @@ indirectly, via [`getLiveDoc`]. However, if you want to bypass the CatColab
 backend and fetch a document from another Automerge repo, you can call this
 function directly.
  */
-export function getLiveDocFromDocHandle<Doc extends Document>(
+export function makeLiveDoc<Doc extends Document>(
     docHandle: DocHandle<Doc>,
-    docType?: string,
-    permissions?: Permissions,
+    docRef?: DocRef,
 ): LiveDoc<Doc> {
-    // Perform any migrations on the document.
-    // XXX: copied from automerge-doc-server/src/server.ts:
-    const docBefore = docHandle.doc();
-    const docAfter = catlogWasm.migrateDocument(docBefore);
-    if ((docBefore as Doc).version !== docAfter.version) {
-        const patches = jsonpatch.compare(docBefore as Doc, docAfter);
-        docHandle.change((doc: unknown) => {
-            jsonpatch.applyPatch(doc, patches);
-        });
-    }
-
     const doc = makeDocHandleReactive(docHandle);
-    if (docType !== undefined) {
-        invariant(
-            doc.type === docType,
-            () => `Expected document of type ${docType}, got ${doc.type}`,
-        );
-    }
-
     const changeDoc = (f: ChangeFn<Doc>) => docHandle.change(f);
-
-    // If permissions are omitted, assume that no restrictions are present.
-    if (!permissions) {
-        permissions = { anyone: "Own", user: null, users: [] };
-    }
-
-    return { doc, changeDoc, docHandle, permissions };
+    return { doc, changeDoc, docHandle, docRef };
 }
 
 /** Create a Solid Store that tracks an Automerge document. */

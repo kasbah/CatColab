@@ -6,19 +6,18 @@ import invariant from "tiny-invariant";
 import type { DiagramJudgment } from "catlog-wasm";
 import { useApi } from "../api";
 import { InlineInput } from "../components";
-import { LiveModelContext } from "../model";
+import { LiveModelContext, createModelLibraryWithApi } from "../model";
 import {
     type CellConstructor,
     type FormalCellEditorProps,
     NotebookEditor,
-    cellShortcutModifier,
     newFormalCell,
 } from "../notebook";
-import { DocumentBreadcrumbs, DocumentLoadingScreen, DocumentMenu, Toolbar } from "../page";
-import { TheoryLibraryContext } from "../stdlib";
-import type { InstanceTypeMeta } from "../theory";
+import { DocumentBreadcrumbs, DocumentLoadingScreen, Toolbar } from "../page";
+import { type InstanceTypeMeta, TheoryLibraryContext } from "../theory";
 import { PermissionsButton } from "../user";
 import { LiveDiagramContext } from "./context";
+import { DiagramMenu } from "./diagram_menu";
 import { type LiveDiagramDocument, getLiveDiagram } from "./document";
 import { DiagramMorphismCellEditor } from "./morphism_cell_editor";
 import { DiagramObjectCellEditor } from "./object_cell_editor";
@@ -33,15 +32,16 @@ import {
 import "./diagram_editor.css";
 
 export default function DiagramPage() {
+    const params = useParams();
+
     const api = useApi();
     const theories = useContext(TheoryLibraryContext);
     invariant(theories, "Must provide theory library as context to diagram page");
-
-    const params = useParams();
+    const models = createModelLibraryWithApi(api, theories);
 
     const [liveDiagram] = createResource(
         () => params.ref,
-        (refId) => getLiveDiagram(refId, api, theories),
+        (refId) => getLiveDiagram(refId, api, models),
     );
 
     return (
@@ -57,14 +57,10 @@ export function DiagramDocumentEditor(props: {
     return (
         <div class="growable-container">
             <Toolbar>
-                <DocumentMenu liveDocument={props.liveDiagram} />
-                <DocumentBreadcrumbs document={props.liveDiagram} />
+                <DiagramMenu liveDiagram={props.liveDiagram} />
+                <DocumentBreadcrumbs liveDoc={props.liveDiagram.liveDoc} />
                 <span class="filler" />
-                <PermissionsButton
-                    permissions={props.liveDiagram.liveDoc.permissions}
-                    refId={props.liveDiagram.refId}
-                    liveDocument={props.liveDiagram}
-                />
+                <PermissionsButton liveDoc={props.liveDiagram.liveDoc} />
             </Toolbar>
             <DiagramPane liveDiagram={props.liveDiagram} />
         </div>
@@ -95,7 +91,7 @@ export function DiagramPane(props: {
                 <div class="instance-of">
                     <div class="name">{liveModel().theory()?.instanceOfName}</div>
                     <div class="model">
-                        <A href={`/model/${liveModel().refId}`}>
+                        <A href={`/model/${liveModel().liveDoc.docRef?.refId}`}>
                             {liveModel().liveDoc.doc.name || "Untitled"}
                         </A>
                     </div>
@@ -183,7 +179,7 @@ function diagramCellConstructor(meta: InstanceTypeMeta): CellConstructor<Diagram
     return {
         name,
         description,
-        shortcut: shortcut && [cellShortcutModifier, ...shortcut],
+        shortcut,
         construct() {
             return meta.tag === "ObType"
                 ? newFormalCell(newDiagramObjectDecl(meta.obType))

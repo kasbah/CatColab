@@ -12,6 +12,10 @@ use crate::{auth::PermissionLevel, user::UserSummary};
 
 /// Creates a new document ref with initial content.
 pub async fn new_ref(ctx: AppCtx, content: Value) -> Result<Uuid, AppError> {
+    // Validate document structure by attempting to deserialize it
+    let _validated_doc: notebook_types::VersionedDocument = serde_json::from_value(content.clone())
+        .map_err(|e| AppError::Invalid(format!("Failed to parse document: {}", e)))?;
+
     let ref_id = Uuid::now_v7();
 
     // If the document is created but the db transaction doesn't complete, then the document will be
@@ -214,9 +218,8 @@ pub struct NewDocSocketResponse {
     pub doc_json: Value,
 }
 
-/// A subset of user relevant information about a ref. Used for showing
-/// users information on a variety of refs without having to load whole
-/// refs.
+/// A subset of user relevant information about a ref. Used for showing users
+/// information on a variety of refs without having to load whole refs.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct RefStub {
     pub name: String,
